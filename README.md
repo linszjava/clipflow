@@ -14,6 +14,18 @@ A modern, high-performance clipboard manager for macOS, built with Tauri and Vue
 - **Native Experience**: Fast, lightweight, and system-integrated (Tray icon, global shortcuts).
 - **OCR Support**: Built-in text recognition for images (macOS only).
 
+## Usage
+
+### Main Interface
+Manage your clips efficiently with pages.
+
+![Main Interface](https://p.ipic.vip/s9ngus.jpg)
+
+### OCR Feature
+Extract text from images instantly.
+
+![OCR Feature](https://p.ipic.vip/6xujb4.png)
+
 ## Tech Stack
 
 - **Frontend**: Vue 3, TypeScript, Tailwind CSS
