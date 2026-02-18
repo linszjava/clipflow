@@ -2,6 +2,8 @@
 
 A modern, high-performance clipboard manager for macOS, built with Tauri and Vue 3.
 
+[English](README.md) | [中文](README_zh.md)
+
 ## Features
 
 - **Clipboard Monitoring**: Automatically saves text, images, and files from clipboard.
