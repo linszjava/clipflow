@@ -100,11 +100,12 @@
 
         <hr class="border-zinc-100" />
 
-        <!-- 存储位置 -->
+        <!-- 文件及图片存储位置 -->
         <div class="settings-row">
-          <label class="settings-label">{{ t('storagePath') }}</label>
-          <div class="space-y-2">
-            <div class="text-xs text-zinc-400 font-mono bg-zinc-50 px-3 py-2 rounded-lg break-all select-all">
+          <label class="settings-label">文件存储目录</label>
+          <div class="space-y-2 flex-1 min-w-0 pr-2">
+            <div class="text-xs text-zinc-400 mt-1 mb-2">用于存放拖拽系统收集的文件或截图</div>
+            <div class="text-[10px] text-zinc-400 font-mono bg-zinc-50 px-3 py-2 rounded-lg break-all select-all border border-zinc-100/80">
               {{ storagePath || '加载中...' }}
             </div>
             <div class="flex items-center gap-2">
@@ -126,6 +127,28 @@
                 class="settings-btn text-red-400 hover:text-red-500"
               >
                 {{ t('reset') }}
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <hr class="border-zinc-100" />
+
+        <!-- 数据库存储位置（快捷短语及文本数据） -->
+        <div class="settings-row">
+          <label class="settings-label">核心数据库位置</label>
+          <div class="space-y-2 flex-1 min-w-0 pr-2">
+            <div class="text-xs text-zinc-400 mt-1 mb-2">系统核心的 SQLite 数据库，安全存放您所有的『快捷短语表单』和纯文本记录。为了防范数据损坏，核心数据库路径只能由系统管理。</div>
+            <div class="text-[10px] text-emerald-500 font-mono bg-emerald-50/50 px-3 py-2 rounded-lg break-all select-all border border-emerald-100/50">
+              {{ dbPath || '加载中...' }}
+            </div>
+            <div class="flex items-center gap-2">
+              <button 
+                @click="openDbInFinder" 
+                class="settings-btn flex items-center gap-1.5 !bg-emerald-50 !text-emerald-700 hover:!bg-emerald-100 border border-emerald-100"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+                在 Finder 中打开
               </button>
             </div>
           </div>
@@ -193,8 +216,17 @@
           📋
         </div>
         <h2 class="text-xl font-bold text-zinc-800">Quick Snap</h2>
-        <p class="text-sm text-zinc-400">{{ t('version') }} 0.1.0</p>
+        <p class="text-sm text-zinc-400">版本 v1.0.2</p>
         <p class="text-xs text-zinc-400 mt-2">{{ t('description') }}</p>
+
+        <!-- GitHub Link -->
+        <button 
+          @click="openGithubRepo"
+          class="mt-4 flex items-center gap-2 px-4 py-2 bg-zinc-100 hover:bg-zinc-200 text-zinc-700 rounded-lg text-xs font-semibold transition-colors border border-zinc-200/50"
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 22v-4a4.8 4.8 0 0 0-1-3.02c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A4.37 4.37 0 0 0 9 18.13V22"/></svg>
+          GitHub 仓库源
+        </button>
         <div class="mt-6 text-xs text-zinc-300">
           {{ t('builtWith') }}
         </div>
@@ -219,6 +251,7 @@
 import { ref, computed, onMounted } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
+import { openUrl } from '@tauri-apps/plugin-opener';
 import { useClipStore } from '../stores/clipStore';
 import { useI18n } from '../i18n';
 import type { Lang } from '../i18n';
@@ -234,6 +267,14 @@ const tabs = computed(() => [
   { id: 'about', label: t('aboutTab'), icon: 'ℹ️' },
 ]);
 const activeTab = ref('general');
+
+const openGithubRepo = async () => {
+    try {
+        await openUrl('https://github.com/linszjava/clipflow');
+    } catch(e) {
+        console.error('Failed to open GitHub repository', e);
+    }
+};
 
 // 语言
 const languages = [
@@ -340,6 +381,26 @@ async function openInFinder() {
   }
 }
 
+// 数据库路径逻辑
+const dbPath = ref('');
+
+async function loadDbPath() {
+  try {
+    dbPath.value = await invoke<string>('get_db_path');
+  } catch (e) {
+    console.error('[Settings] Failed to get db path:', e);
+    dbPath.value = '无法获取数据库路径';
+  }
+}
+
+async function openDbInFinder() {
+  try {
+    await invoke('open_db_in_finder');
+  } catch (e) {
+    console.error('[Settings] Failed to open db in Finder:', e);
+  }
+}
+
 const isCustomPath = ref(false);
 
 async function checkIsCustomPath() {
@@ -396,6 +457,7 @@ const {
 onMounted(() => {
   loadStoragePath();
   checkIsCustomPath();
+  loadDbPath();
   // loadMonitorState -> 已在 useShortcuts 初始化时处理，或保持监听
   // registerShortcuts -> 已在 App.vue 处理
   

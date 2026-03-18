@@ -161,6 +161,14 @@ export const useClipStore = defineStore('clips', {
 
         async deleteAllClipsInPage(pageId: string) {
             if (!this.db) return;
+            // 获取该页面的所有包含文件的片段，用于删除底层实体文件
+            const clips = await this.db.select<Clip[]>('SELECT * FROM clips WHERE page_id = $1', [pageId]);
+            const { invoke } = await import('@tauri-apps/api/core');
+            for (const clip of clips) {
+                if (clip.type === 'image' || clip.type === 'file') {
+                    try { await invoke('delete_file', { path: clip.content }); } catch (e) { }
+                }
+            }
             await this.db.execute('DELETE FROM clips WHERE page_id = $1', [pageId]);
             await this.refreshClips();
         },
