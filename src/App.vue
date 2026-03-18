@@ -5,18 +5,26 @@ import { storeToRefs } from "pinia";
 import { Clip } from "./types";
 import { convertFileSrc, invoke, Channel } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { ask } from '@tauri-apps/plugin-dialog';
+import { ask, message } from '@tauri-apps/plugin-dialog';
 import Settings from "./components/Settings.vue";
+import SnippetView from "./components/SnippetView.vue";
 import { useI18n } from "./i18n";
 import { initShortcuts } from "./composables/useShortcuts";
+import { useSnippetStore } from "./stores/snippetStore";
 
 const { t } = useI18n();
 
 const clipStore = useClipStore();
+const snippetStore = useSnippetStore();
 const { clips, pages, selectedPageId, selectedType } = storeToRefs(clipStore);
+const { pages: snippetPages, selectedPageId: selectedSnippetPageId } = storeToRefs(snippetStore);
 
 // UI 状态
+const currentNav = ref<'clips'|'snippets'>('clips');
 const showNewPageDialog = ref(false);
+const showNewSnippetPageDialog = ref(false);
+const snippetCols = ref(3);
+const snippetRows = ref(2);
 const showRenamePageDialog = ref(false);
 const newPageName = ref('');
 const renamePageId = ref('');
@@ -113,6 +121,7 @@ watch(searchInput, (val) => {
 
 onMounted(async () => {
     await clipStore.init();
+    await snippetStore.init();
     await clipStore.startListener();
     await initShortcuts();
     // 全局点击关闭右键菜单
@@ -193,13 +202,28 @@ const openContextMenu = (e: MouseEvent, clip: Clip) => {
 };
 
 // Page 管理
-const createPage = () => {
-    if (newPageName.value.trim()) {
-        clipStore.createPage(newPageName.value);
-        newPageName.value = '';
-        showNewPageDialog.value = false;
+const createPage = async () => {
+    if (!newPageName.value.trim()) {
+        await message('请输入页面名称', { title: '提示', kind: 'warning' });
+        return;
     }
+    clipStore.createPage(newPageName.value);
+    newPageName.value = '';
+    showNewPageDialog.value = false;
 };
+
+const createSnippetPage = async () => {
+    if (!newPageName.value.trim()) {
+        await message('请输入页面名称', { title: '提示', kind: 'warning' });
+        return;
+    }
+    snippetStore.createPage(newPageName.value, snippetCols.value, snippetRows.value);
+    newPageName.value = '';
+    snippetCols.value = 3;
+    snippetRows.value = 2;
+    showNewSnippetPageDialog.value = false;
+};
+
 // 页面右键菜单
 const showPageMenu = ref(false);
 const pageMenuPos = ref({ x: 0, y: 0 });
@@ -248,6 +272,67 @@ const confirmEmptyPage = async () => {
     }
 };
 
+// Snippet 页面右键菜单
+const showSnippetPageMenu = ref(false);
+const snippetPageMenuPos = ref({ x: 0, y: 0 });
+const snippetPageMenuTarget = ref<any>(null);
+
+const showSnippetPageContextMenu = (e: MouseEvent, spage: any) => {
+    snippetPageMenuPos.value = { x: e.clientX, y: e.clientY };
+    snippetPageMenuTarget.value = spage;
+    showSnippetPageMenu.value = true;
+    
+    const close = () => { showSnippetPageMenu.value = false; document.removeEventListener('click', close); };
+    setTimeout(() => document.addEventListener('click', close), 0);
+};
+
+const showRenameSnippetPageDialog = ref(false);
+const renameSnippetPageId = ref('');
+const renameSnippetPageName = ref('');
+
+const startRenameSnippet = (spage: any) => {
+    renameSnippetPageId.value = spage.id;
+    renameSnippetPageName.value = spage.name;
+    showRenameSnippetPageDialog.value = true;
+};
+
+const confirmRenameSnippet = () => {
+    if (renameSnippetPageName.value.trim()) {
+        snippetStore.renamePage(renameSnippetPageId.value, renameSnippetPageName.value);
+        showRenameSnippetPageDialog.value = false;
+    }
+};
+
+const showPasswordDialog = ref(false);
+const passwordPageId = ref('');
+const newPasswordInput = ref('');
+
+const startSetPassword = (spage: any) => {
+    passwordPageId.value = spage.id;
+    newPasswordInput.value = spage.password || '';
+    showPasswordDialog.value = true;
+};
+
+const confirmSetPassword = async () => {
+    const pwd = newPasswordInput.value.trim() || null;
+    await snippetStore.setPagePassword(passwordPageId.value, pwd);
+    showPasswordDialog.value = false;
+};
+
+const confirmDeleteSnippetPage = async () => {
+    if (!snippetPageMenuTarget.value) return;
+    const confirmed = await ask(`确定要删除快捷短语页面 "${snippetPageMenuTarget.value.name}" 吗？此操作将彻底删除页面及其所有内容且不可恢复。`, {
+        title: '彻底删除页面',
+        kind: 'warning',
+        okLabel: '彻底删除',
+        cancelLabel: '取消',
+    });
+    if (confirmed) {
+        await snippetStore.deletePage(snippetPageMenuTarget.value.id);
+        showSnippetPageMenu.value = false;
+    }
+};
+
 const typeFilters = computed(() => [
     { key: 'all' as const, label: t('all'), icon: 'all' },
     { key: 'text' as const, label: t('text'), icon: 'text' },
@@ -284,7 +369,7 @@ const typeFilters = computed(() => [
       <!-- Navigation -->
       <nav class="flex-1 overflow-y-auto px-3 py-4 space-y-1 custom-scrollbar">
         <div class="flex items-center justify-between px-3 mb-3">
-          <span class="text-[10px] font-bold text-zinc-400 uppercase tracking-widest">{{ t('pages') }}</span>
+          <span class="text-[10px] font-bold text-zinc-400 uppercase tracking-widest">{{ t('pages') }} (剪贴板)</span>
           <button
             class="w-6 h-6 flex items-center justify-center rounded-md hover:bg-zinc-200/50 text-zinc-400 hover:text-zinc-700 transition-colors"
             title="New Page"
@@ -298,10 +383,10 @@ const typeFilters = computed(() => [
           v-for="page in pages"
           :key="page.id"
           class="flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-all duration-200 group cursor-pointer border border-transparent"
-          :class="selectedPageId === page.id 
+          :class="(currentNav === 'clips' && selectedPageId === page.id) 
             ? 'bg-white text-indigo-600 shadow-sm border-zinc-200 ring-1 ring-zinc-200/50' 
             : 'hover:bg-zinc-200/50 hover:text-zinc-900 border-transparent text-zinc-500'"
-          @click="clipStore.selectPage(page.id); showSettings = false"
+          @click="currentNav = 'clips'; clipStore.selectPage(page.id); showSettings = false"
           @contextmenu.prevent="showPageContextMenu($event, page)"
         >
           <span class="opacity-70 group-hover:opacity-100 transition-opacity">
@@ -330,6 +415,34 @@ const typeFilters = computed(() => [
             <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
           </button>
         </a>
+
+        <!-- SNIPPETS SECTION -->
+        <div class="flex items-center justify-between px-3 mt-6 mb-3">
+          <span class="text-[10px] font-bold text-zinc-400 uppercase tracking-widest">快捷短语 (Data)</span>
+          <button
+            class="w-6 h-6 flex items-center justify-center rounded-md hover:bg-zinc-200/50 text-zinc-400 hover:text-zinc-700 transition-colors"
+            title="新快捷短语页"
+            @click="showNewSnippetPageDialog = true"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M12 5v14"/></svg>
+          </button>
+        </div>
+        
+        <a 
+          v-for="spage in snippetPages"
+          :key="spage.id"
+          class="flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-all duration-200 group cursor-pointer border border-transparent"
+          :class="(currentNav === 'snippets' && selectedSnippetPageId === spage.id)
+            ? 'bg-white text-emerald-600 shadow-sm border-zinc-200 ring-1 ring-emerald-500/10' 
+            : 'hover:bg-zinc-200/50 hover:text-zinc-900 border-transparent text-zinc-500'"
+          @click="currentNav = 'snippets'; snippetStore.selectPage(spage.id); showSettings = false"
+          @contextmenu.prevent="showSnippetPageContextMenu($event, spage)"
+        >
+          <span class="opacity-70 group-hover:opacity-100 transition-opacity">
+            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v18"/><rect width="18" height="18" x="3" y="3" rx="2"/></svg>
+          </span>
+          <span class="truncate flex-1">{{ spage.name }}</span>
+        </a>
       </nav>
       
       <!-- Bottom -->
@@ -348,8 +461,10 @@ const typeFilters = computed(() => [
     <!-- Settings View -->
     <Settings v-if="showSettings" @close="showSettings = false" class="flex-1 bg-zinc-50" />
 
+    <SnippetView v-else-if="currentNav === 'snippets'" />
+
     <!-- Main -->
-    <main v-else class="flex-1 flex flex-col h-full relative bg-zinc-50/50">
+    <main v-else-if="currentNav === 'clips'" class="flex-1 flex flex-col h-full relative bg-zinc-50/50">
       <!-- Background Pattern -->
       <div class="absolute inset-0 opacity-[0.015] pointer-events-none" style="background-image: radial-gradient(#000 1px, transparent 1px); background-size: 20px 20px;"></div>
 
@@ -540,6 +655,37 @@ const typeFilters = computed(() => [
       </button>
     </div>
 
+    <!-- Snippet Page Context Menu -->
+    <div
+      v-if="showSnippetPageMenu && snippetPageMenuTarget"
+      class="fixed bg-white/95 backdrop-blur-xl rounded-xl shadow-[0_8px_30px_rgb(0,0,0,0.12)] border border-zinc-200/50 py-1.5 z-50 min-w-[180px] text-xs transform transition-all duration-100 ring-1 ring-black/5"
+      :style="{ left: snippetPageMenuPos.x + 'px', top: snippetPageMenuPos.y + 'px' }"
+    >
+      <button
+        class="w-full px-3 py-2 text-left text-zinc-700 hover:bg-zinc-100 flex items-center gap-2 transition-colors"
+        @click="startRenameSnippet(snippetPageMenuTarget); showSnippetPageMenu = false"
+      >
+        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"/></svg>
+        重命名
+      </button>
+      <div class="h-px bg-zinc-100 my-1 mx-3"></div>
+      <button
+        class="w-full px-3 py-2 text-left text-zinc-700 hover:bg-zinc-100 flex items-center gap-2 transition-colors"
+        @click="startSetPassword(snippetPageMenuTarget); showSnippetPageMenu = false"
+      >
+        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+        设置/修改密码
+      </button>
+      <div class="h-px bg-zinc-100 my-1 mx-3"></div>
+      <button
+        class="w-full px-3 py-2 text-left text-red-500 hover:bg-red-50 flex items-center gap-2 transition-colors"
+        @click="confirmDeleteSnippetPage"
+      >
+        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg>
+        彻底删除页面
+      </button>
+    </div>
+
     <!-- Context Menu -->
     <div
       v-if="showContextMenu && contextMenuClip"
@@ -562,18 +708,30 @@ const typeFilters = computed(() => [
     </div>
 
     <!-- Dialogs: New/Rename (Shared Style) -->
-    <div v-if="showNewPageDialog || showRenamePageDialog" class="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-50 transition-opacity" @click.self="showNewPageDialog = false; showRenamePageDialog = false">
+    <div v-if="showNewPageDialog || showRenamePageDialog || showNewSnippetPageDialog" class="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-50 transition-opacity" @click.self="showNewPageDialog = false; showRenamePageDialog = false; showNewSnippetPageDialog = false">
       <div class="bg-white rounded-2xl shadow-2xl p-6 w-80 transform transition-all scale-100 border border-zinc-100">
-        <h3 class="text-base font-bold text-zinc-900 mb-4">{{ showNewPageDialog ? t('newPage') : t('renamePage') }}</h3>
+        <h3 class="text-base font-bold text-zinc-900 mb-4">{{ showNewPageDialog ? t('newPage') : (showNewSnippetPageDialog ? '新快捷短语页' : t('renamePage')) }}</h3>
         <input
-          v-if="showNewPageDialog"
+          v-if="showNewPageDialog || showNewSnippetPageDialog"
           v-model="newPageName"
           type="text"
           :placeholder="t('pageName')"
           class="w-full px-4 py-2.5 border border-zinc-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all bg-zinc-50 focus:bg-white"
-          @keyup.enter="createPage"
+          @keyup.enter="(showNewPageDialog || showNewSnippetPageDialog) ? (showNewPageDialog ? createPage() : createSnippetPage()) : null"
           autofocus
         >
+
+        <div v-if="showNewSnippetPageDialog" class="flex gap-3 mt-4">
+            <div class="flex-1">
+                <label class="block text-xs font-semibold text-zinc-500 mb-1.5 ml-1">列数 (Cols)</label>
+                <input type="number" v-model.number="snippetCols" min="1" max="10" class="w-full px-4 py-2 border border-zinc-200 rounded-xl text-sm bg-zinc-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500/20 transition-all">
+            </div>
+            <div class="flex-1">
+                <label class="block text-xs font-semibold text-zinc-500 mb-1.5 ml-1">初始行数 (Rows)</label>
+                <input type="number" v-model.number="snippetRows" min="0" max="20" class="w-full px-4 py-2 border border-zinc-200 rounded-xl text-sm bg-zinc-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500/20 transition-all">
+            </div>
+        </div>
+
         <input
           v-else
           v-model="renamePageName"
@@ -584,12 +742,12 @@ const typeFilters = computed(() => [
           autofocus
         >
         <div class="flex justify-end gap-3 mt-6">
-          <button class="px-3 py-2 text-xs font-medium text-zinc-500 hover:text-zinc-700 hover:bg-zinc-100 rounded-lg transition-colors" @click="showNewPageDialog = false; showRenamePageDialog = false">{{ t('cancel') }}</button>
+          <button class="px-3 py-2 text-xs font-medium text-zinc-500 hover:text-zinc-700 hover:bg-zinc-100 rounded-lg transition-colors" @click="showNewPageDialog = false; showRenamePageDialog = false; showNewSnippetPageDialog = false">{{ t('cancel') }}</button>
           <button 
             class="px-4 py-2 text-xs font-semibold bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 active:scale-95 transition-all shadow-lg shadow-indigo-500/30"
-            @click="showNewPageDialog ? createPage() : confirmRename()"
+            @click="showNewPageDialog ? createPage() : (showNewSnippetPageDialog ? createSnippetPage() : confirmRename())"
           >
-            {{ showNewPageDialog ? t('create') : t('save') }}
+            {{ (showNewPageDialog || showNewSnippetPageDialog) ? t('create') : t('save') }}
           </button>
         </div>
       </div>
@@ -689,6 +847,60 @@ const typeFilters = computed(() => [
         </div>
         <div class="flex-1 overflow-auto p-5">
           <pre class="text-sm text-zinc-700 font-mono leading-relaxed whitespace-pre-wrap break-words select-all">{{ previewTextContent }}</pre>
+        </div>
+      </div>
+    </div>
+
+    <!-- Rename Snippet Page Dialog -->
+    <div v-if="showRenameSnippetPageDialog" class="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center animate-in fade-in duration-200">
+      <div class="bg-white rounded-xl shadow-2xl w-full max-w-sm overflow-hidden animate-in zoom-in-95 duration-200">
+        <div class="px-5 py-4 border-b border-zinc-100 flex items-center justify-between bg-zinc-50/50">
+          <h3 class="font-semibold text-zinc-800">重命名页面</h3>
+          <button @click="showRenameSnippetPageDialog = false" class="text-zinc-400 hover:text-zinc-600 transition-colors">
+            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </button>
+        </div>
+        <div class="p-5">
+          <input 
+            v-model="renameSnippetPageName" 
+            type="text" 
+            placeholder="请输入新页面名称" 
+            class="w-full px-3 py-2 bg-white border border-zinc-200 rounded-lg text-sm text-zinc-900 placeholder:text-zinc-400 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all font-medium"
+            @keyup.enter="confirmRenameSnippet"
+          />
+        </div>
+        <div class="px-5 py-4 bg-zinc-50 border-t border-zinc-100 flex justify-end gap-2">
+          <button @click="showRenameSnippetPageDialog = false" class="px-4 py-2 text-sm font-medium text-zinc-600 hover:bg-zinc-200/50 rounded-lg transition-colors">取消</button>
+          <button @click="confirmRenameSnippet" class="px-4 py-2 text-sm font-medium bg-indigo-600 text-white hover:bg-indigo-700 shadow-sm shadow-indigo-600/20 rounded-lg transition-all focus:ring-2 focus:ring-indigo-500/50 outline-none">确定</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Password Settings Dialog -->
+    <div v-if="showPasswordDialog" class="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center animate-in fade-in duration-200">
+      <div class="bg-white rounded-xl shadow-2xl w-full max-w-sm overflow-hidden animate-in zoom-in-95 duration-200">
+        <div class="px-5 py-4 border-b border-zinc-100 flex items-center justify-between bg-zinc-50/50">
+          <h3 class="font-semibold text-zinc-800">设置访问密码</h3>
+          <button @click="showPasswordDialog = false" class="text-zinc-400 hover:text-zinc-600 transition-colors">
+            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </button>
+        </div>
+        <div class="p-5">
+          <input 
+            v-model="newPasswordInput" 
+            type="text" 
+            placeholder="留空则表示无密码 (Remove password)" 
+            class="w-full px-3 py-2 bg-white border border-zinc-200 rounded-lg text-sm text-zinc-900 placeholder:text-zinc-400 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all font-medium"
+            @keyup.enter="confirmSetPassword"
+            autofocus
+          />
+          <p class="mt-3 text-xs text-zinc-500 leading-relaxed">如果设置了密码，在此应用启动时，将需要重新输入密码才能查看该页面的数据内容。</p>
+        </div>
+        <div class="px-5 py-4 bg-zinc-50 border-t border-zinc-100 flex justify-end gap-2">
+          <button @click="showPasswordDialog = false" class="px-4 py-2 text-sm font-medium text-zinc-600 hover:bg-zinc-200/50 rounded-lg transition-colors">取消</button>
+          <button @click="confirmSetPassword" class="px-4 py-2 text-sm font-medium bg-indigo-600 text-white hover:bg-indigo-700 shadow-sm shadow-indigo-600/20 rounded-lg transition-all focus:ring-2 focus:ring-indigo-500/50 outline-none">
+            保存密码
+          </button>
         </div>
       </div>
     </div>

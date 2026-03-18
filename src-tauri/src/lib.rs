@@ -46,6 +46,44 @@ pub fn run() {
                 INSERT OR IGNORE INTO pages (id, name, rank, is_system) VALUES ('inbox', 'Inbox', 0, 1);
             ",
             kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 2,
+            description: "create_snippet_tables",
+            sql: "
+                CREATE TABLE IF NOT EXISTS snippet_pages (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    rank INTEGER NOT NULL,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                );
+
+                CREATE TABLE IF NOT EXISTS snippet_items (
+                    id TEXT PRIMARY KEY,
+                    page_id TEXT NOT NULL,
+                    data TEXT NOT NULL, -- JSON formatted array of string
+                    rank INTEGER NOT NULL,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY(page_id) REFERENCES snippet_pages(id) ON DELETE CASCADE
+                );
+            ",
+            kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 3,
+            description: "add_headers_to_snippet_pages",
+            sql: "
+                ALTER TABLE snippet_pages ADD COLUMN headers TEXT DEFAULT '[\"账号 (Account)\", \"密码 (Password)\", \"备注 (Notes)\"]';
+            ",
+            kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 4,
+            description: "add_password_to_snippet_pages",
+            sql: "
+                ALTER TABLE snippet_pages ADD COLUMN password TEXT;
+            ",
+            kind: MigrationKind::Up,
         }
     ];
 
@@ -110,6 +148,8 @@ pub fn run() {
             storage::is_custom_storage,
             storage::set_storage_path,
             storage::open_storage_in_finder,
+            storage::get_db_path,
+            storage::open_db_in_finder,
             ocr::ocr_image,
             clipboard_write::copy_image_to_clipboard,
             monitor::toggle_monitor,

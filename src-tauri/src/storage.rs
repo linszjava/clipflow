@@ -118,3 +118,37 @@ pub fn open_storage_in_finder() -> Result<(), String> {
     
     Ok(())
 }
+
+/// 获取全局数据库所在的目录路径
+pub fn get_db_dir() -> PathBuf {
+    let mut dir = dirs::data_dir().unwrap_or_else(|| PathBuf::from("."));
+    dir.push("com.linsz.clipflow");
+    dir
+}
+
+/// Tauri command: 获取数据库的完整路径
+#[tauri::command]
+pub fn get_db_path() -> String {
+    let mut path = get_db_dir();
+    path.push("quicksnap.db");
+    path.to_string_lossy().to_string()
+}
+
+/// Tauri command: 在 Finder 中打开数据库所在目录
+#[tauri::command]
+pub fn open_db_in_finder() -> Result<(), String> {
+    let dir = get_db_dir();
+    if !dir.exists() {
+        fs::create_dir_all(&dir).map_err(|e| format!("Failed to create DB dir: {}", e))?;
+    }
+    
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg(dir)
+            .spawn()
+            .map_err(|e| format!("Failed to open Finder: {}", e))?;
+    }
+    
+    Ok(())
+}
