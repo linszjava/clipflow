@@ -1,7 +1,7 @@
 import { ref } from 'vue';
-import { invoke } from '@tauri-apps/api/core';
 import { register, unregisterAll } from '@tauri-apps/plugin-global-shortcut';
 import { getCurrentWindow, Window } from '@tauri-apps/api/window';
+import { shortcutApi } from '../services/tauri/shortcutApi';
 
 // 全局状态 — 不限于组件生命周期
 const shortcuts = ref({
@@ -80,7 +80,7 @@ function onShortcutKeyDown(e: KeyboardEvent, target: 'capture' | 'toggle') {
 
 async function toggleMonitorState() {
     try {
-        const isActive = await invoke<boolean>('toggle_monitor');
+        const isActive = await shortcutApi.toggleMonitor();
         autoCapture.value = isActive;
         console.log('[Shortcut] Auto-capture:', isActive ? 'ON' : 'OFF');
         return isActive;
@@ -136,7 +136,7 @@ async function registerShortcuts() {
 
 async function loadMonitorState() {
     try {
-        const paused = await invoke<boolean>('is_monitor_paused');
+        const paused = await shortcutApi.isMonitorPaused();
         console.log('[Shortcut] Initial State: Monitor paused =', paused);
         autoCapture.value = !paused;
     } catch (err) {

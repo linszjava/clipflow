@@ -4,12 +4,17 @@ import { Clip, Page } from '../types';
 import { listen, UnlistenFn } from '@tauri-apps/api/event';
 import { v4 as uuidv4 } from 'uuid';
 import { writeText } from '@tauri-apps/plugin-clipboard-manager';
+import { clipApi } from '../services/tauri/clipApi';
 
 // Module-level variables to survive Pinia state hydration/serialization issues
 // and to facilitate HMR cleanup.
 let globalUnlisten: UnlistenFn | null = null;
 let lastAddContent = '';
 let lastAddTimestamp = 0;
+
+const HISTORY_DEFAULT_DAYS = 30;
+const HISTORY_FOREVER_MODE = 36500;
+const HISTORY_CUSTOM_MODE = -1;
 
 export const useClipStore = defineStore('clips', {
     state: () => ({
@@ -44,15 +49,21 @@ export const useClipStore = defineStore('clips', {
             await this.loadPages();
             console.log('[ClipStore] Pages loaded:', this.pages.length);
 
-            // 一次性迁移：将旧的 UTC 时间戳转换为本地时间（+8小时）
+            // 一次性迁移：将旧 UTC 时间戳按当前系统时区偏移转换为本地时间
             const migrated = localStorage.getItem('quicksnap-tz-migrated');
             if (!migrated) {
                 try {
+                    const offsetHours = -new Date().getTimezoneOffset() / 60;
+                    const sign = offsetHours >= 0 ? '+' : '-';
+                    const absOffset = Math.abs(offsetHours);
+                    const hourStr = Number.isInteger(absOffset)
+                        ? `${absOffset} hours`
+                        : `${Math.round(absOffset * 60)} minutes`;
                     await this.db.execute(
-                        "UPDATE clips SET created_at = datetime(created_at, '+8 hours') WHERE created_at IS NOT NULL"
+                        `UPDATE clips SET created_at = datetime(created_at, '${sign}${hourStr}') WHERE created_at IS NOT NULL`
                     );
                     localStorage.setItem('quicksnap-tz-migrated', '1');
-                    console.log('[ClipStore] Migrated timestamps from UTC to local time');
+                    console.log('[ClipStore] Migrated timestamps from UTC to local time with offset:', `${sign}${hourStr}`);
                 } catch (e) {
                     console.error('[ClipStore] Timestamp migration failed:', e);
                 }
@@ -91,20 +102,33 @@ export const useClipStore = defineStore('clips', {
 
         // 应用历史保留策略（启动时自动调用）
         async applyHistoryRetention() {
-            const mode = parseInt(localStorage.getItem('quicksnap-keep-history') || '30');
-            if (mode === 36500) {
+            const rawMode = localStorage.getItem('quicksnap-keep-history');
+            const parsedMode = Number.parseInt(rawMode || '', 10);
+            const mode = Number.isNaN(parsedMode) ? HISTORY_DEFAULT_DAYS : parsedMode;
+
+            if (mode === HISTORY_FOREVER_MODE) {
                 console.log('[ClipStore] History retention: forever, skipping cleanup');
                 return;
             }
 
             let cutoffDate: Date;
-            if (mode === -1) {
+            if (mode === HISTORY_CUSTOM_MODE) {
                 const saved = localStorage.getItem('quicksnap-custom-delete-date');
                 if (!saved) return;
                 cutoffDate = new Date(saved);
+                if (Number.isNaN(cutoffDate.getTime())) {
+                    console.warn('[ClipStore] Invalid custom delete date:', saved);
+                    return;
+                }
             } else {
-                cutoffDate = new Date();
-                cutoffDate.setDate(cutoffDate.getDate() - mode);
+                if (mode <= 0) {
+                    console.warn('[ClipStore] Invalid retention mode, fallback to default:', mode);
+                    cutoffDate = new Date();
+                    cutoffDate.setDate(cutoffDate.getDate() - HISTORY_DEFAULT_DAYS);
+                } else {
+                    cutoffDate = new Date();
+                    cutoffDate.setDate(cutoffDate.getDate() - mode);
+                }
             }
 
             // 使用本地时间格式（与 SQLite datetime('now','localtime') 一致）
@@ -163,10 +187,9 @@ export const useClipStore = defineStore('clips', {
             if (!this.db) return;
             // 获取该页面的所有包含文件的片段，用于删除底层实体文件
             const clips = await this.db.select<Clip[]>('SELECT * FROM clips WHERE page_id = $1', [pageId]);
-            const { invoke } = await import('@tauri-apps/api/core');
             for (const clip of clips) {
                 if (clip.type === 'image' || clip.type === 'file') {
-                    try { await invoke('delete_file', { path: clip.content }); } catch (e) { }
+                    try { await clipApi.deleteFile(clip.content); } catch (e) { }
                 }
             }
             await this.db.execute('DELETE FROM clips WHERE page_id = $1', [pageId]);
@@ -241,8 +264,7 @@ export const useClipStore = defineStore('clips', {
             const clip = this.clips.find(c => c.id === id);
             if (clip && (clip.type === 'image' || clip.type === 'file')) {
                 try {
-                    const { invoke } = await import('@tauri-apps/api/core');
-                    await invoke('delete_file', { path: clip.content });
+                    await clipApi.deleteFile(clip.content);
                 } catch (e) {
                     console.error('[ClipStore] Failed to delete file:', e);
                 }
@@ -268,8 +290,7 @@ export const useClipStore = defineStore('clips', {
             try {
                 if (clip.type === 'image') {
                     // 图片类型：将图片数据写入剪贴板（而非路径）
-                    const { invoke } = await import('@tauri-apps/api/core');
-                    await invoke('copy_image_to_clipboard', { imagePath: clip.content });
+                    await clipApi.copyImageToClipboard(clip.content);
                 } else {
                     // 文本/文件类型：复制文本内容或文件路径
                     await writeText(clip.content);
@@ -314,10 +335,9 @@ export const useClipStore = defineStore('clips', {
             if (!this.db) return;
             // Get all clips in page to delete files
             const clips = await this.db.select<Clip[]>('SELECT * FROM clips WHERE page_id = $1', [this.selectedPageId]);
-            const { invoke } = await import('@tauri-apps/api/core');
             for (const clip of clips) {
                 if (clip.type === 'image' || clip.type === 'file') {
-                    try { await invoke('delete_file', { path: clip.content }); } catch (e) { }
+                    try { await clipApi.deleteFile(clip.content); } catch (e) { }
                 }
             }
 
@@ -330,10 +350,9 @@ export const useClipStore = defineStore('clips', {
             if (!this.db) return;
             // Get all clips to delete files
             const clips = await this.db.select<Clip[]>('SELECT * FROM clips');
-            const { invoke } = await import('@tauri-apps/api/core');
             for (const clip of clips) {
                 if (clip.type === 'image' || clip.type === 'file') {
-                    try { await invoke('delete_file', { path: clip.content }); } catch (e) { }
+                    try { await clipApi.deleteFile(clip.content); } catch (e) { }
                 }
             }
 
@@ -353,10 +372,9 @@ export const useClipStore = defineStore('clips', {
             );
 
             if (toDelete.length > 0) {
-                const { invoke } = await import('@tauri-apps/api/core');
                 for (const clip of toDelete) {
                     if (clip.type === 'image' || clip.type === 'file') {
-                        try { await invoke('delete_file', { path: clip.content }); } catch (e) {
+                        try { await clipApi.deleteFile(clip.content); } catch (e) {
                             console.error('[ClipStore] Failed to delete file during cleanup:', e);
                         }
                     }

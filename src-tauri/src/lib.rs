@@ -16,6 +16,7 @@ use tauri_plugin_sql::{Migration, MigrationKind};
 use tauri::{AppHandle, Manager};
 use tauri::tray::{MouseButton, TrayIconBuilder, TrayIconEvent};
 use tauri::menu::{Menu, MenuItem};
+use tauri::image::Image;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -95,9 +96,15 @@ pub fn run() {
             let quit_i = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
             let show_i = MenuItem::with_id(app, "show", "Show QuickSnap", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&show_i, &quit_i])?;
+            let tray_icon_png = image::load_from_memory(include_bytes!("../icons/icon.png"))
+                .map_err(|e| format!("failed to decode tray icon png: {e}"))?
+                .to_rgba8();
+            let (tray_w, tray_h) = tray_icon_png.dimensions();
+            let tray_icon = Image::new_owned(tray_icon_png.into_raw(), tray_w, tray_h);
             
             let _tray = TrayIconBuilder::new()
-                .icon(app.default_window_icon().unwrap().clone())
+                .icon(tray_icon)
+                .icon_as_template(true)
                 .menu(&menu)
                 .show_menu_on_left_click(false)
                 .on_menu_event(|app: &AppHandle, event| {

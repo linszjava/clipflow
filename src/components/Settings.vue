@@ -249,12 +249,12 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue';
-import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import { useClipStore } from '../stores/clipStore';
 import { useI18n } from '../i18n';
 import type { Lang } from '../i18n';
+import { settingsApi } from '../services/tauri/settingsApi';
 
 
 
@@ -333,8 +333,17 @@ async function applyHistoryPolicy() {
   let cutoffDate: Date;
   if (mode === -1) {
     // 自定义日期
-    if (!customDeleteDate.value) return;
+    if (!customDeleteDate.value) {
+      cleanupMessage.value = '⚠️ 请先选择一个自定义日期';
+      setTimeout(() => { cleanupMessage.value = ''; }, 3000);
+      return;
+    }
     cutoffDate = new Date(customDeleteDate.value);
+    if (Number.isNaN(cutoffDate.getTime())) {
+      cleanupMessage.value = '⚠️ 自定义日期格式无效';
+      setTimeout(() => { cleanupMessage.value = ''; }, 3000);
+      return;
+    }
   } else {
     // N 天前
     cutoffDate = new Date();
@@ -366,7 +375,7 @@ const storagePath = ref('');
 
 async function loadStoragePath() {
   try {
-    storagePath.value = await invoke<string>('get_storage_path');
+    storagePath.value = await settingsApi.getStoragePath();
   } catch (e) {
     console.error('[Settings] Failed to get storage path:', e);
     storagePath.value = '无法获取路径';
@@ -375,7 +384,7 @@ async function loadStoragePath() {
 
 async function openInFinder() {
   try {
-    await invoke('open_storage_in_finder');
+    await settingsApi.openStorageInFinder();
   } catch (e) {
     console.error('[Settings] Failed to open in Finder:', e);
   }
@@ -386,7 +395,7 @@ const dbPath = ref('');
 
 async function loadDbPath() {
   try {
-    dbPath.value = await invoke<string>('get_db_path');
+    dbPath.value = await settingsApi.getDbPath();
   } catch (e) {
     console.error('[Settings] Failed to get db path:', e);
     dbPath.value = '无法获取数据库路径';
@@ -395,7 +404,7 @@ async function loadDbPath() {
 
 async function openDbInFinder() {
   try {
-    await invoke('open_db_in_finder');
+    await settingsApi.openDbInFinder();
   } catch (e) {
     console.error('[Settings] Failed to open db in Finder:', e);
   }
@@ -405,7 +414,7 @@ const isCustomPath = ref(false);
 
 async function checkIsCustomPath() {
   try {
-    isCustomPath.value = await invoke<boolean>('is_custom_storage');
+    isCustomPath.value = await settingsApi.isCustomStorage();
   } catch (e) {
     console.error('[Settings] Failed to check custom path:', e);
   }
@@ -420,7 +429,7 @@ async function changeStoragePath() {
     });
     
     if (selected && typeof selected === 'string') {
-      await invoke('set_storage_path', { path: selected });
+      await settingsApi.setStoragePath(selected);
       await loadStoragePath();
       isCustomPath.value = true;
     }
@@ -431,7 +440,7 @@ async function changeStoragePath() {
 
 async function resetStoragePath() {
   try {
-    await invoke('set_storage_path', { path: null });
+    await settingsApi.setStoragePath(null);
     await loadStoragePath();
     isCustomPath.value = false;
   } catch (e) {

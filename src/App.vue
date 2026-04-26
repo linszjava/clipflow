@@ -3,24 +3,31 @@ import { ref, computed, onMounted, onUnmounted, watch } from "vue";
 import { useClipStore } from "./stores/clipStore";
 import { storeToRefs } from "pinia";
 import { Clip } from "./types";
-import { convertFileSrc, invoke, Channel } from "@tauri-apps/api/core";
+import { convertFileSrc, Channel } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { ask, message } from '@tauri-apps/plugin-dialog';
 import Settings from "./components/Settings.vue";
 import SnippetView from "./components/SnippetView.vue";
+import ClipPreviewModal from "./components/ClipPreviewModal.vue";
+import PageEditDialog from "./components/PageEditDialog.vue";
+import DataAnalysisView from "./components/DataAnalysisView.vue";
 import { useI18n } from "./i18n";
 import { initShortcuts } from "./composables/useShortcuts";
 import { useSnippetStore } from "./stores/snippetStore";
+import { useAnalysisStore } from "./stores/analysisStore";
+import { clipApi, type DragStartPayload } from "./services/tauri/clipApi";
 
 const { t } = useI18n();
 
 const clipStore = useClipStore();
 const snippetStore = useSnippetStore();
+const analysisStore = useAnalysisStore();
 const { clips, pages, selectedPageId, selectedType } = storeToRefs(clipStore);
 const { pages: snippetPages, selectedPageId: selectedSnippetPageId } = storeToRefs(snippetStore);
+const { pages: analysisPages, selectedPageId: selectedAnalysisPageId } = storeToRefs(analysisStore);
 
 // UI 状态
-const currentNav = ref<'clips'|'snippets'>('clips');
+const currentNav = ref<'clips'|'snippets'|'analysis'>('clips');
 const showNewPageDialog = ref(false);
 const showNewSnippetPageDialog = ref(false);
 const snippetCols = ref(3);
@@ -36,73 +43,44 @@ const showSettings = ref(false);
 const searchInput = ref('');
 const isPinned = ref(false);
 const previewImageSrc = ref('');
-const previewZoom = ref(1);
 const previewClipPath = ref('');
-const ocrText = ref('');
-const ocrLoading = ref(false);
-const showOcrResult = ref(false);
 const previewTextContent = ref('');
+const clipsNavCollapsed = ref(false);
+const snippetsNavCollapsed = ref(false);
+const analysisNavCollapsed = ref(false);
+
+const toggleClipsNav = () => {
+    clipsNavCollapsed.value = !clipsNavCollapsed.value;
+};
+
+const toggleSnippetsNav = () => {
+    snippetsNavCollapsed.value = !snippetsNavCollapsed.value;
+};
+
+const collapseAllNav = () => {
+    clipsNavCollapsed.value = true;
+    snippetsNavCollapsed.value = true;
+    analysisNavCollapsed.value = true;
+};
+
+const toggleAnalysisNav = () => {
+    analysisNavCollapsed.value = !analysisNavCollapsed.value;
+};
 
 const openPreview = (src: string, clipPath: string) => {
     previewImageSrc.value = src;
     previewClipPath.value = clipPath;
-    previewZoom.value = 1;
-    ocrText.value = '';
-    showOcrResult.value = false;
-};
-const closePreview = () => {
-    previewImageSrc.value = '';
-    previewZoom.value = 1;
-    ocrText.value = '';
-    showOcrResult.value = false;
-};
-const zoomIn = () => { previewZoom.value = Math.min(previewZoom.value + 0.25, 5); };
-const zoomOut = () => { previewZoom.value = Math.max(previewZoom.value - 0.25, 0.25); };
-const zoomReset = () => { previewZoom.value = 1; };
-const handleWheel = (e: WheelEvent) => {
-    // 仅 Cmd/Ctrl+滚轮 触发缩放，普通滚轮正常滚动
-    if (!e.metaKey && !e.ctrlKey) return;
-    e.preventDefault();
-    if (e.deltaY < 0) zoomIn();
-    else zoomOut();
 };
 
 const performOcr = async (imagePath?: string) => {
-    const path = imagePath || previewClipPath.value;
-    if (ocrLoading.value || !path) return;
-    ocrLoading.value = true;
-    ocrText.value = '';
-    showOcrResult.value = true;
     try {
-        const text = await invoke<string>('ocr_image', { imagePath: path });
-        ocrText.value = text;
-        // 如果不在预览模式，直接显示在文本预览弹窗
-        if (!previewImageSrc.value) {
-            previewTextContent.value = text;
-            showOcrResult.value = false;
-        }
+        const path = imagePath || previewClipPath.value;
+        if (!path) return;
+        const text = await clipApi.ocrImage(path);
+        previewTextContent.value = text;
     } catch (err: any) {
-        ocrText.value = `识别失败: ${err}`;
-        if (!previewImageSrc.value) {
-            previewTextContent.value = `识别失败: ${err}`;
-            showOcrResult.value = false;
-        }
-    } finally {
-        ocrLoading.value = false;
+        previewTextContent.value = `识别失败: ${err}`;
     }
-};
-
-const copyOcrText = async () => {
-    if (!ocrText.value) return;
-    try {
-        await navigator.clipboard.writeText(ocrText.value);
-    } catch { /* fallback */ }
-};
-
-const copyText = async (text: string) => {
-    try {
-        await navigator.clipboard.writeText(text);
-    } catch { /* fallback */ }
 };
 
 const togglePinWindow = async () => {
@@ -122,6 +100,7 @@ watch(searchInput, (val) => {
 onMounted(async () => {
     await clipStore.init();
     await snippetStore.init();
+    await analysisStore.init();
     await clipStore.startListener();
     await initShortcuts();
     // 全局点击关闭右键菜单
@@ -148,7 +127,7 @@ const handleFileDrag = async (_e: MouseEvent, clip: Clip) => {
             console.log("[Drag] Event:", message);
         };
 
-        const payload: any = {
+        const payload: DragStartPayload = {
             item: [filePath],
             matchCursor: false, 
             onEvent: onEvent,
@@ -165,7 +144,7 @@ const handleFileDrag = async (_e: MouseEvent, clip: Clip) => {
         }
 
         console.log("[Drag] Invoking start_drag with:", payload);
-        await invoke('plugin:drag|start_drag', payload);
+        await clipApi.startDrag(payload);
         console.log("[Drag] Drag initiated");
     } catch (err) {
         console.error("[Drag] Native drag failed:", err);
@@ -207,9 +186,10 @@ const createPage = async () => {
         await message('请输入页面名称', { title: '提示', kind: 'warning' });
         return;
     }
-    clipStore.createPage(newPageName.value);
+    await clipStore.createPage(newPageName.value);
     newPageName.value = '';
     showNewPageDialog.value = false;
+    clipsNavCollapsed.value = false;
 };
 
 const createSnippetPage = async () => {
@@ -217,11 +197,12 @@ const createSnippetPage = async () => {
         await message('请输入页面名称', { title: '提示', kind: 'warning' });
         return;
     }
-    snippetStore.createPage(newPageName.value, snippetCols.value, snippetRows.value);
+    await snippetStore.createPage(newPageName.value, snippetCols.value, snippetRows.value);
     newPageName.value = '';
     snippetCols.value = 3;
     snippetRows.value = 2;
     showNewSnippetPageDialog.value = false;
+    snippetsNavCollapsed.value = false;
 };
 
 // 页面右键菜单
@@ -229,8 +210,34 @@ const showPageMenu = ref(false);
 const pageMenuPos = ref({ x: 0, y: 0 });
 const pageMenuTarget = ref<any>(null);
 
+const getSmartMenuPos = (
+    triggerEl: HTMLElement | null,
+    fallbackX: number,
+    fallbackY: number,
+    menuWidth: number,
+    menuHeight: number
+) => {
+    const margin = 8;
+    const viewportW = window.innerWidth;
+    const viewportH = window.innerHeight;
+
+    let x = fallbackX;
+    let y = fallbackY;
+
+    if (triggerEl) {
+        const rect = triggerEl.getBoundingClientRect();
+        x = rect.right - 6;
+        y = rect.top + rect.height / 2 - menuHeight / 2;
+    }
+
+    x = Math.min(Math.max(margin, x), viewportW - menuWidth - margin);
+    y = Math.min(Math.max(margin, y), viewportH - menuHeight - margin);
+    return { x, y };
+};
+
 const showPageContextMenu = (e: MouseEvent, page: any) => {
-    pageMenuPos.value = { x: e.clientX, y: e.clientY };
+    const triggerEl = e.currentTarget as HTMLElement | null;
+    pageMenuPos.value = getSmartMenuPos(triggerEl, e.clientX, e.clientY, 190, 170);
     pageMenuTarget.value = page;
     showPageMenu.value = true;
     
@@ -278,7 +285,8 @@ const snippetPageMenuPos = ref({ x: 0, y: 0 });
 const snippetPageMenuTarget = ref<any>(null);
 
 const showSnippetPageContextMenu = (e: MouseEvent, spage: any) => {
-    snippetPageMenuPos.value = { x: e.clientX, y: e.clientY };
+    const triggerEl = e.currentTarget as HTMLElement | null;
+    snippetPageMenuPos.value = getSmartMenuPos(triggerEl, e.clientX, e.clientY, 190, 170);
     snippetPageMenuTarget.value = spage;
     showSnippetPageMenu.value = true;
     
@@ -333,12 +341,55 @@ const confirmDeleteSnippetPage = async () => {
     }
 };
 
+const generateSnippetAnalysis = async () => {
+    if (!snippetPageMenuTarget.value) return;
+    try {
+        await analysisStore.generateFromSnippetPage(
+            snippetPageMenuTarget.value.id,
+            snippetPageMenuTarget.value.name
+        );
+        currentNav.value = 'analysis';
+        showSnippetPageMenu.value = false;
+        await message(`已生成分析页面：${snippetPageMenuTarget.value.name}-数据分析`, { title: '生成成功', kind: 'info' });
+    } catch (e: any) {
+        await message(`生成数据分析失败：${e?.message || String(e)}`, { title: 'Error', kind: 'error' });
+    }
+};
+
 const typeFilters = computed(() => [
     { key: 'all' as const, label: t('all'), icon: 'all' },
     { key: 'text' as const, label: t('text'), icon: 'text' },
     { key: 'image' as const, label: t('image'), icon: 'image' },
     { key: 'file' as const, label: t('file'), icon: 'file' },
 ]);
+
+const pageDialogVisible = computed(
+    () => showNewPageDialog.value || showRenamePageDialog.value || showNewSnippetPageDialog.value,
+);
+
+const pageDialogMode = computed<'create-clip-page' | 'create-snippet-page' | 'rename-clip-page'>(() => {
+    if (showNewPageDialog.value) return 'create-clip-page';
+    if (showNewSnippetPageDialog.value) return 'create-snippet-page';
+    return 'rename-clip-page';
+});
+
+const closePageDialog = () => {
+    showNewPageDialog.value = false;
+    showRenamePageDialog.value = false;
+    showNewSnippetPageDialog.value = false;
+};
+
+const submitPageDialog = () => {
+    if (showNewPageDialog.value) {
+        createPage();
+        return;
+    }
+    if (showNewSnippetPageDialog.value) {
+        createSnippetPage();
+        return;
+    }
+    confirmRename();
+};
 </script>
 
 <template>
@@ -368,17 +419,41 @@ const typeFilters = computed(() => [
       
       <!-- Navigation -->
       <nav class="flex-1 overflow-y-auto px-3 py-4 space-y-1 custom-scrollbar">
-        <div class="flex items-center justify-between px-3 mb-3">
-          <span class="text-[10px] font-bold text-zinc-400 uppercase tracking-widest">{{ t('pages') }} (剪贴板)</span>
+        <div class="flex justify-end px-2 mb-2">
           <button
-            class="w-6 h-6 flex items-center justify-center rounded-md hover:bg-zinc-200/50 text-zinc-400 hover:text-zinc-700 transition-colors"
-            title="New Page"
-            @click="showNewPageDialog = true"
+            class="text-[10px] px-2 py-1 rounded-md border border-zinc-200 text-zinc-500 hover:text-zinc-700 hover:bg-zinc-100 transition-colors"
+            title="一键收起全部导航分组"
+            @click="collapseAllNav"
           >
-            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M12 5v14"/></svg>
+            一键收起全部
           </button>
         </div>
-        
+        <div class="flex items-center justify-between px-3 mb-3">
+          <button
+            class="flex items-center gap-1.5 text-[10px] font-bold text-zinc-400 uppercase tracking-widest hover:text-zinc-600 transition-colors"
+            @click="toggleClipsNav"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" :class="clipsNavCollapsed ? '' : 'rotate-90'" class="transition-transform"><path d="m9 18 6-6-6-6"/></svg>
+            <span>{{ t('pages') }} (剪贴板)</span>
+          </button>
+          <div class="flex items-center gap-1">
+            <button
+              class="w-6 h-6 flex items-center justify-center rounded-md hover:bg-zinc-200/50 text-zinc-400 hover:text-zinc-700 transition-colors"
+              :title="clipsNavCollapsed ? '展开' : '收起'"
+              @click="toggleClipsNav"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" :class="clipsNavCollapsed ? '' : 'rotate-90'" class="transition-transform"><path d="m9 18 6-6-6-6"/></svg>
+            </button>
+            <button
+              class="w-6 h-6 flex items-center justify-center rounded-md hover:bg-zinc-200/50 text-zinc-400 hover:text-zinc-700 transition-colors"
+              title="New Page"
+              @click="showNewPageDialog = true"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M12 5v14"/></svg>
+            </button>
+          </div>
+        </div>
+        <template v-if="!clipsNavCollapsed">
         <a 
           v-for="page in pages"
           :key="page.id"
@@ -415,19 +490,35 @@ const typeFilters = computed(() => [
             <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
           </button>
         </a>
+        </template>
 
         <!-- SNIPPETS SECTION -->
         <div class="flex items-center justify-between px-3 mt-6 mb-3">
-          <span class="text-[10px] font-bold text-zinc-400 uppercase tracking-widest">快捷短语 (Data)</span>
           <button
-            class="w-6 h-6 flex items-center justify-center rounded-md hover:bg-zinc-200/50 text-zinc-400 hover:text-zinc-700 transition-colors"
-            title="新快捷短语页"
-            @click="showNewSnippetPageDialog = true"
+            class="flex items-center gap-1.5 text-[10px] font-bold text-zinc-400 uppercase tracking-widest hover:text-zinc-600 transition-colors"
+            @click="toggleSnippetsNav"
           >
-            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M12 5v14"/></svg>
+            <svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" :class="snippetsNavCollapsed ? '' : 'rotate-90'" class="transition-transform"><path d="m9 18 6-6-6-6"/></svg>
+            <span>快捷短语 (Data)</span>
           </button>
+          <div class="flex items-center gap-1">
+            <button
+              class="w-6 h-6 flex items-center justify-center rounded-md hover:bg-zinc-200/50 text-zinc-400 hover:text-zinc-700 transition-colors"
+              :title="snippetsNavCollapsed ? '展开' : '收起'"
+              @click="toggleSnippetsNav"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" :class="snippetsNavCollapsed ? '' : 'rotate-90'" class="transition-transform"><path d="m9 18 6-6-6-6"/></svg>
+            </button>
+            <button
+              class="w-6 h-6 flex items-center justify-center rounded-md hover:bg-zinc-200/50 text-zinc-400 hover:text-zinc-700 transition-colors"
+              title="新快捷短语页"
+              @click="showNewSnippetPageDialog = true"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M12 5v14"/></svg>
+            </button>
+          </div>
         </div>
-        
+        <template v-if="!snippetsNavCollapsed">
         <a 
           v-for="spage in snippetPages"
           :key="spage.id"
@@ -443,6 +534,33 @@ const typeFilters = computed(() => [
           </span>
           <span class="truncate flex-1">{{ spage.name }}</span>
         </a>
+        </template>
+
+        <div class="flex items-center justify-between px-3 mt-6 mb-3">
+          <button
+            class="flex items-center gap-1.5 text-[10px] font-bold text-zinc-400 uppercase tracking-widest hover:text-zinc-600 transition-colors"
+            @click="toggleAnalysisNav"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" :class="analysisNavCollapsed ? '' : 'rotate-90'" class="transition-transform"><path d="m9 18 6-6-6-6"/></svg>
+            <span>数据分析</span>
+          </button>
+        </div>
+        <template v-if="!analysisNavCollapsed">
+        <a 
+          v-for="apage in analysisPages"
+          :key="apage.id"
+          class="flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-all duration-200 group cursor-pointer border border-transparent"
+          :class="(currentNav === 'analysis' && selectedAnalysisPageId === apage.id)
+            ? 'bg-white text-purple-600 shadow-sm border-zinc-200 ring-1 ring-purple-500/10' 
+            : 'hover:bg-zinc-200/50 hover:text-zinc-900 border-transparent text-zinc-500'"
+          @click="currentNav = 'analysis'; analysisStore.selectPage(apage.id); showSettings = false"
+        >
+          <span class="opacity-70 group-hover:opacity-100 transition-opacity">
+            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="m19 9-5 5-4-4-3 3"/></svg>
+          </span>
+          <span class="truncate flex-1">{{ apage.name }}</span>
+        </a>
+        </template>
       </nav>
       
       <!-- Bottom -->
@@ -462,6 +580,7 @@ const typeFilters = computed(() => [
     <Settings v-if="showSettings" @close="showSettings = false" class="flex-1 bg-zinc-50" />
 
     <SnippetView v-else-if="currentNav === 'snippets'" />
+    <DataAnalysisView v-else-if="currentNav === 'analysis'" />
 
     <!-- Main -->
     <main v-else-if="currentNav === 'clips'" class="flex-1 flex flex-col h-full relative bg-zinc-50/50">
@@ -678,6 +797,14 @@ const typeFilters = computed(() => [
       </button>
       <div class="h-px bg-zinc-100 my-1 mx-3"></div>
       <button
+        class="w-full px-3 py-2 text-left text-purple-600 hover:bg-purple-50 flex items-center gap-2 transition-colors"
+        @click="generateSnippetAnalysis"
+      >
+        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="m19 9-5 5-4-4-3 3"/></svg>
+        生成数据分析
+      </button>
+      <div class="h-px bg-zinc-100 my-1 mx-3"></div>
+      <button
         class="w-full px-3 py-2 text-left text-red-500 hover:bg-red-50 flex items-center gap-2 transition-colors"
         @click="confirmDeleteSnippetPage"
       >
@@ -707,149 +834,36 @@ const typeFilters = computed(() => [
       </button>
     </div>
 
-    <!-- Dialogs: New/Rename (Shared Style) -->
-    <div v-if="showNewPageDialog || showRenamePageDialog || showNewSnippetPageDialog" class="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-50 transition-opacity" @click.self="showNewPageDialog = false; showRenamePageDialog = false; showNewSnippetPageDialog = false">
-      <div class="bg-white rounded-2xl shadow-2xl p-6 w-80 transform transition-all scale-100 border border-zinc-100">
-        <h3 class="text-base font-bold text-zinc-900 mb-4">{{ showNewPageDialog ? t('newPage') : (showNewSnippetPageDialog ? '新快捷短语页' : t('renamePage')) }}</h3>
-        <input
-          v-if="showNewPageDialog || showNewSnippetPageDialog"
-          v-model="newPageName"
-          type="text"
-          :placeholder="t('pageName')"
-          class="w-full px-4 py-2.5 border border-zinc-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all bg-zinc-50 focus:bg-white"
-          @keyup.enter="(showNewPageDialog || showNewSnippetPageDialog) ? (showNewPageDialog ? createPage() : createSnippetPage()) : null"
-          autofocus
-        >
+    <PageEditDialog
+      :visible="pageDialogVisible"
+      :mode="pageDialogMode"
+      :page-name="newPageName"
+      :rename-name="renamePageName"
+      :snippet-cols="snippetCols"
+      :snippet-rows="snippetRows"
+      :create-label="t('create')"
+      :save-label="t('save')"
+      :cancel-label="t('cancel')"
+      :page-name-placeholder="t('pageName')"
+      :new-name-placeholder="t('newName')"
+      :new-page-title="t('newPage')"
+      :rename-page-title="t('renamePage')"
+      @update:page-name="newPageName = $event"
+      @update:rename-name="renamePageName = $event"
+      @update:snippet-cols="snippetCols = $event"
+      @update:snippet-rows="snippetRows = $event"
+      @close="closePageDialog"
+      @submit="submitPageDialog"
+    />
 
-        <div v-if="showNewSnippetPageDialog" class="flex gap-3 mt-4">
-            <div class="flex-1">
-                <label class="block text-xs font-semibold text-zinc-500 mb-1.5 ml-1">列数 (Cols)</label>
-                <input type="number" v-model.number="snippetCols" min="1" max="10" class="w-full px-4 py-2 border border-zinc-200 rounded-xl text-sm bg-zinc-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500/20 transition-all">
-            </div>
-            <div class="flex-1">
-                <label class="block text-xs font-semibold text-zinc-500 mb-1.5 ml-1">初始行数 (Rows)</label>
-                <input type="number" v-model.number="snippetRows" min="0" max="20" class="w-full px-4 py-2 border border-zinc-200 rounded-xl text-sm bg-zinc-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500/20 transition-all">
-            </div>
-        </div>
-
-        <input
-          v-else
-          v-model="renamePageName"
-          type="text"
-          :placeholder="t('newName')"
-          class="w-full px-4 py-2.5 border border-zinc-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all bg-zinc-50 focus:bg-white"
-          @keyup.enter="confirmRename"
-          autofocus
-        >
-        <div class="flex justify-end gap-3 mt-6">
-          <button class="px-3 py-2 text-xs font-medium text-zinc-500 hover:text-zinc-700 hover:bg-zinc-100 rounded-lg transition-colors" @click="showNewPageDialog = false; showRenamePageDialog = false; showNewSnippetPageDialog = false">{{ t('cancel') }}</button>
-          <button 
-            class="px-4 py-2 text-xs font-semibold bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 active:scale-95 transition-all shadow-lg shadow-indigo-500/30"
-            @click="showNewPageDialog ? createPage() : (showNewSnippetPageDialog ? createSnippetPage() : confirmRename())"
-          >
-            {{ (showNewPageDialog || showNewSnippetPageDialog) ? t('create') : t('save') }}
-          </button>
-        </div>
-      </div>
-    </div>
-
-    <!-- Image Preview Lightbox -->
-    <div
-      v-if="previewImageSrc"
-      class="fixed inset-0 bg-black/80 backdrop-blur-md flex items-center justify-center z-[100]"
-      @click.self="closePreview"
-      @wheel="handleWheel"
-    >
-      <!-- Close -->
-      <button
-        class="absolute top-4 right-4 w-8 h-8 flex items-center justify-center rounded-full bg-white/10 hover:bg-white/20 text-white text-lg transition-colors z-[101]"
-        @click="closePreview"
-      >×</button>
-      
-      <!-- Zoom Controls -->
-      <div class="absolute bottom-6 left-1/2 -translate-x-1/2 flex items-center gap-2 bg-black/60 backdrop-blur-xl rounded-full px-4 py-2 z-[101]">
-        <button class="w-7 h-7 flex items-center justify-center rounded-full text-white/80 hover:text-white hover:bg-white/10 transition-colors text-sm font-bold" @click="zoomOut">−</button>
-        <span class="text-white/80 text-xs font-mono min-w-[3rem] text-center select-none">{{ Math.round(previewZoom * 100) }}%</span>
-        <button class="w-7 h-7 flex items-center justify-center rounded-full text-white/80 hover:text-white hover:bg-white/10 transition-colors text-sm font-bold" @click="zoomIn">＋</button>
-        <div class="w-px h-4 bg-white/20 mx-1"></div>
-        <button class="px-2 h-7 flex items-center justify-center rounded-full text-white/60 hover:text-white hover:bg-white/10 transition-colors text-[10px] font-medium" @click="zoomReset">Reset</button>
-        <div class="w-px h-4 bg-white/20 mx-1"></div>
-        <button 
-          class="px-3 h-7 flex items-center justify-center gap-1.5 rounded-full transition-colors text-[10px] font-semibold"
-          :class="ocrLoading ? 'bg-indigo-500/30 text-indigo-300 cursor-wait' : 'bg-indigo-500/80 text-white hover:bg-indigo-500'"
-          @click="() => performOcr()"
-          :disabled="ocrLoading"
-        >
-          <svg v-if="ocrLoading" class="animate-spin w-3 h-3" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3" stroke-dasharray="31.4" stroke-dashoffset="10" /></svg>
-          <svg v-else xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7V4h3"/><path d="M17 4h3v3"/><path d="M20 17v3h-3"/><path d="M7 20H4v-3"/><path d="M7 12h10"/><path d="M7 8h6"/><path d="M7 16h8"/></svg>
-          OCR
-        </button>
-      </div>
-      
-      <!-- OCR Result Panel -->
-      <div 
-        v-if="showOcrResult"
-        class="absolute top-4 left-4 bottom-20 w-72 bg-black/70 backdrop-blur-xl rounded-2xl border border-white/10 flex flex-col z-[102] shadow-2xl transition-all"
-      >
-        <div class="flex items-center justify-between px-4 py-3 border-b border-white/10">
-          <span class="text-white/90 text-xs font-semibold flex items-center gap-1.5"><svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7V4h3"/><path d="M17 4h3v3"/><path d="M20 17v3h-3"/><path d="M7 20H4v-3"/><path d="M7 12h10"/><path d="M7 8h6"/><path d="M7 16h8"/></svg> OCR 识别结果</span>
-          <div class="flex items-center gap-1.5">
-            <button 
-              v-if="ocrText && !ocrLoading"
-              class="px-2 py-1 rounded-md text-[10px] text-white/70 hover:text-white hover:bg-white/10 transition-colors"
-              @click="copyOcrText"
-            >复制</button>
-            <button 
-              class="w-6 h-6 flex items-center justify-center rounded-md text-white/50 hover:text-white hover:bg-white/10 transition-colors text-sm"
-              @click="showOcrResult = false"
-            >×</button>
-          </div>
-        </div>
-        <div class="flex-1 overflow-auto p-4">
-          <div v-if="ocrLoading" class="flex items-center justify-center h-full">
-            <div class="flex flex-col items-center gap-3">
-              <svg class="animate-spin w-6 h-6 text-indigo-400" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3" stroke-dasharray="31.4" stroke-dashoffset="10" /></svg>
-              <span class="text-white/50 text-xs">正在识别中...</span>
-            </div>
-          </div>
-          <pre v-else class="text-white/90 text-xs leading-relaxed whitespace-pre-wrap break-words font-sans select-all">{{ ocrText }}</pre>
-        </div>
-      </div>
-      
-      <!-- Image -->
-      <div class="overflow-auto max-w-[95vw] max-h-[90vh] flex items-center justify-center" :class="previewZoom > 1 ? 'cursor-grab active:cursor-grabbing' : 'cursor-zoom-in'" @click.self="previewZoom <= 1 ? closePreview() : null">
-        <img
-          :src="previewImageSrc"
-          class="transition-transform duration-150 ease-out rounded-lg shadow-2xl"
-          :style="{ transform: `scale(${previewZoom})` }"
-          @click.stop="previewZoom <= 1 ? zoomIn() : null"
-        />
-      </div>
-    </div>
-
-    <!-- Text Preview Lightbox -->
-    <div
-      v-if="previewTextContent"
-      class="fixed inset-0 bg-black/80 backdrop-blur-md flex items-center justify-center z-[100]"
-      @click.self="previewTextContent = ''"
-    >
-      <button
-        class="absolute top-4 right-4 w-8 h-8 flex items-center justify-center rounded-full bg-white/10 hover:bg-white/20 text-white text-lg transition-colors z-[101]"
-        @click="previewTextContent = ''"
-      >×</button>
-      <div class="bg-white/95 backdrop-blur-xl rounded-2xl shadow-2xl max-w-[85vw] max-h-[85vh] w-[600px] flex flex-col border border-zinc-200/50">
-        <div class="flex items-center justify-between px-5 py-3 border-b border-zinc-100">
-          <span class="text-xs font-semibold text-zinc-500 flex items-center gap-1.5"><svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M10 13H8"/><path d="M16 13h-4"/><path d="M16 17h-8"/></svg> 文本内容</span>
-          <button
-            class="px-3 py-1 text-[10px] font-medium text-indigo-600 hover:bg-indigo-50 rounded-md transition-colors"
-            @click="copyText(previewTextContent)"
-          >复制全部</button>
-        </div>
-        <div class="flex-1 overflow-auto p-5">
-          <pre class="text-sm text-zinc-700 font-mono leading-relaxed whitespace-pre-wrap break-words select-all">{{ previewTextContent }}</pre>
-        </div>
-      </div>
-    </div>
+    <ClipPreviewModal
+      :image-src="previewImageSrc"
+      :image-path="previewClipPath"
+      :text-content="previewTextContent"
+      @update:image-src="previewImageSrc = $event"
+      @update:image-path="previewClipPath = $event"
+      @update:text-content="previewTextContent = $event"
+    />
 
     <!-- Rename Snippet Page Dialog -->
     <div v-if="showRenameSnippetPageDialog" class="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center animate-in fade-in duration-200">
