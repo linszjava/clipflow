@@ -39,6 +39,12 @@ export const useSnippetStore = defineStore('snippets', {
                 if (!this.db) {
                     this.db = await Database.load('sqlite:quicksnap.db');
                     console.log('[SnippetStore] DB loaded');
+                    await this.db.execute(
+                        'CREATE TABLE IF NOT EXISTS snippet_copy_logs (id TEXT PRIMARY KEY, page_id TEXT NOT NULL, item_id TEXT, col_idx INTEGER, value TEXT NOT NULL, copied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)'
+                    );
+                    await this.db.execute(
+                        'CREATE INDEX IF NOT EXISTS idx_snippet_copy_logs_page_time ON snippet_copy_logs(page_id, copied_at DESC)'
+                    );
                 }
             } catch (e) {
                 console.error('[SnippetStore] Failed to load DB:', e);
@@ -198,6 +204,48 @@ export const useSnippetStore = defineStore('snippets', {
             await this.refreshItems();
         },
 
+        async reorderItemRanks(orderedIds: string[]) {
+            if (!this.db || !this.selectedPageId || orderedIds.length === 0) return;
+            for (let i = 0; i < orderedIds.length; i++) {
+                await this.db.execute(
+                    'UPDATE snippet_items SET rank = $1 WHERE id = $2 AND page_id = $3',
+                    [i, orderedIds[i], this.selectedPageId]
+                );
+            }
+            await this.refreshItems();
+        },
+
+        async replacePageData(headers: string[], rows: string[][]) {
+            if (!this.db || !this.selectedPageId) return;
+            const pageId = this.selectedPageId;
+
+            const normalizedHeaders = headers.map((h, idx) => (h && h.trim()) ? h.trim() : `字段 ${idx + 1}`);
+            await this.updatePageHeaders(pageId, normalizedHeaders);
+
+            const existing = await this.db.select<{ id: string }[]>(
+                'SELECT id FROM snippet_items WHERE page_id = $1',
+                [pageId]
+            );
+            const existingIds = new Set(existing.map(item => item.id));
+
+            await this.db.execute('DELETE FROM snippet_items WHERE page_id = $1', [pageId]);
+
+            for (let i = 0; i < rows.length; i++) {
+                const itemId = uuidv4();
+                const row = rows[i];
+                const normalized = Array(normalizedHeaders.length).fill('').map((_, idx) => row[idx] || '');
+                await this.db.execute(
+                    'INSERT INTO snippet_items (id, page_id, data, rank, created_at) VALUES ($1, $2, $3, $4, datetime("now","localtime"))',
+                    [itemId, pageId, JSON.stringify(normalized), i]
+                );
+            }
+
+            this.hiddenRows = this.hiddenRows.filter(id => !existingIds.has(id));
+            localStorage.setItem('clipflow_hiddenRows', JSON.stringify(this.hiddenRows));
+
+            await this.refreshItems();
+        },
+
         async deleteItem(id: string) {
             if (!this.db) return;
             await this.db.execute('DELETE FROM snippet_items WHERE id = $1', [id]);
@@ -218,6 +266,24 @@ export const useSnippetStore = defineStore('snippets', {
                 }
             } catch (e) {
                 console.error('Failed to copy snippet:', e);
+            }
+        },
+
+        async copyCellValue(itemId: string, colIdx: number, text: string) {
+            if (!text) return;
+            try {
+                await writeText(text);
+                if (!this.db || !this.selectedPageId) return;
+                await this.db.execute(
+                    'CREATE TABLE IF NOT EXISTS snippet_copy_logs (id TEXT PRIMARY KEY, page_id TEXT NOT NULL, item_id TEXT, col_idx INTEGER, value TEXT NOT NULL, copied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)'
+                );
+                const id = uuidv4();
+                await this.db.execute(
+                    'INSERT INTO snippet_copy_logs (id, page_id, item_id, col_idx, value, copied_at) VALUES ($1, $2, $3, $4, $5, datetime("now","localtime"))',
+                    [id, this.selectedPageId, itemId, colIdx, text]
+                );
+            } catch (e) {
+                console.error('Failed to copy snippet cell:', e);
             }
         },
 

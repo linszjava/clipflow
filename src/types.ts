@@ -31,3 +31,32 @@ export interface SnippetItem {
     rank: number;
     created_at: string;
 }
+
+export interface AnalysisMetricRow {
+    value: string;
+    totalCopies: number;
+    copiesLast7Days: number;
+    avgCopiesPerDay7Days: number;
+    lastCopiedAt: string;
+}
+
+export interface AnalysisDailyPoint {
+    date: string;
+    copies: number;
+}
+
+export interface AnalysisHourlyPoint {
+    hour: number;
+    copies: number;
+}
+
+export interface AnalysisPage {
+    id: string;
+    sourcePageId: string;
+    sourcePageName?: string;
+    name: string;
+    generatedAt: string;
+    rows: AnalysisMetricRow[];
+    dailyTrend14d: AnalysisDailyPoint[];
+    hourlyDistribution: AnalysisHourlyPoint[];
+}
